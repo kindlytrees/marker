@@ -62,7 +62,8 @@ def img_to_html(img, img_alt):
 
 
 @st.cache_data()
-def get_page_image(pdf_file, page_num, dpi=96):
+#def get_page_image(pdf_file, page_num, dpi=96):
+def get_page_image(pdf_file, page_num, dpi=200):
     if "pdf" in pdf_file.type:
         doc = open_pdf(pdf_file)
         page = doc[page_num]

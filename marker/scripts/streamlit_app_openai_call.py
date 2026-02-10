@@ -27,7 +27,10 @@ from marker.output import text_from_rendered
 # from marker.config.apikey import LLMAPI_KEY
 from openai import OpenAI
 from streamlit_ace import st_ace
-
+import io
+import base64
+import oss2
+import uuid
 
 def convert_pdf(fname: str, config_parser: ConfigParser) -> (str, Dict[str, Any], dict):
     config_dict = config_parser.generate_config_dict()
@@ -43,6 +46,72 @@ def convert_pdf(fname: str, config_parser: ConfigParser) -> (str, Dict[str, Any]
     return converter(fname)
 
 
+# def markdown_insert_images(markdown, images):
+#     image_tags = re.findall(
+#         r'(!\[(?P<image_title>[^\]]*)\]\((?P<image_path>[^\)"\s]+)\s*([^\)]*)\))',
+#         markdown,
+#     )
+
+#     for image in image_tags:
+#         image_markdown = image[0]
+#         image_alt = image[1]
+#         image_path = image[2]
+#         if image_path in images:
+#             markdown = markdown.replace(
+#                 image_markdown, img_to_html(images[image_path], image_alt)
+#             )
+#     return markdown
+
+# image upload to cloud and return url？？？
+
+def img2cloud_to_html(img, img_alt):
+    # 1. Get OSS configuration from environment variables
+    access_key_id = os.environ.get("OSS_ACCESS_KEY_ID")
+    access_key_secret = os.environ.get("OSS_ACCESS_KEY_SECRET")
+    bucket_name = os.environ.get("OSS_BUCKET_NAME")
+    endpoint = os.environ.get("OSS_ENDPOINT")
+
+    # Check if configuration is complete
+    if not all([access_key_id, access_key_secret, bucket_name, endpoint]):
+        # Fallback or error message if config is missing
+        return f'<p style="color:red;">Error: OSS configuration missing. Please check environment variables.</p>'
+
+    # 2. Convert PIL image to byte stream
+    img_bytes = io.BytesIO()
+    # Use the format defined in settings, default to PNG if not set
+    img_format = settings.OUTPUT_IMAGE_FORMAT if hasattr(settings, 'OUTPUT_IMAGE_FORMAT') else 'PNG'
+    img.save(img_bytes, format=img_format)
+    img_bytes.seek(0) # Reset pointer to the beginning of the stream
+
+    # 3. Generate a unique filename to avoid overwriting
+    # Using UUID to ensure uniqueness, and organizing into a 'streamlit_images' folder
+    file_ext = img_format.lower()
+    unique_filename = f"screenshots/{uuid.uuid4().hex}.{file_ext}"
+
+    # 4. Initialize OSS Bucket object
+    auth = oss2.Auth(access_key_id, access_key_secret)
+    bucket = oss2.Bucket(auth, endpoint, bucket_name)
+
+    try:
+        # 5. Upload the file to OSS
+        # put_object automatically handles the stream upload
+        bucket.put_object(unique_filename, img_bytes)
+
+        # 6. Construct the public access URL
+        # Remove protocol (http/https) from endpoint to avoid duplication
+        clean_endpoint = endpoint.replace("https://", "").replace("http://", "")
+        # Standard OSS URL format: https://{bucket-name}.{endpoint}/{filename}
+        image_url = f"https://{bucket_name}.{clean_endpoint}/{unique_filename}"
+
+        # 7. Return the HTML img tag
+        url = f'<img src="{image_url}" alt="{img_alt}" style="max-width: 100%;">'
+        print(url)
+        return url
+
+    except Exception as e:
+        # Return error info in HTML if upload fails
+        error = f'<p style="color:red;">Image Upload Failed: {str(e)}</p>'
+        return error
 def markdown_insert_images(markdown, images):
     image_tags = re.findall(
         r'(!\[(?P<image_title>[^\]]*)\]\((?P<image_path>[^\)"\s]+)\s*([^\)]*)\))',
@@ -55,9 +124,20 @@ def markdown_insert_images(markdown, images):
         image_path = image[2]
         if image_path in images:
             markdown = markdown.replace(
-                image_markdown, img_to_html(images[image_path], image_alt)
+                image_markdown, img2cloud_to_html(images[image_path], image_alt)
             )
     return markdown
+
+def remove_base64_images(text: str) -> str:
+    """
+    从文本中移除所有 <img> 标签（特别是包含 base64 数据的）
+    支持单引号、双引号、无引号（不推荐但兼容）、跨行等场景
+    """
+    # 匹配 <img ...> 标签，特别针对 src="data:image/...base64,...
+    pattern = r'<img\s+[^>]*src\s*=\s*["\']?data:image/[^"\'>]*["\']?[^>]*>'
+    cleaned_text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+    return cleaned_text.strip()
+
 
 def translate_with_openaicall_stream(text: str, target_language: str = "中文") -> str:
     base_url = "https://api.modelarts-maas.com/openai/v1"  # API地址
@@ -69,8 +149,13 @@ def translate_with_openaicall_stream(text: str, target_language: str = "中文")
         stream = client.chat.completions.create(
             model="qwen3-30b-a3b",
             messages=[
-                {"role": "system", "content": f"请提供翻译的原材料内容,系统会将其翻译为中文并做一定的整理工作，如将文中的'我们'用'论文中'进行替换,将公式进行整理成latex的格式表示,整体保留markdown格式进行输出等。"},
-                {"role": "user", "content": f"好的，内容如下:{text}。请帮助翻译和整理，谢谢。"}
+                {"role": "system", "content": f"请提供翻译的原材料内容,系统会将其翻译为中文并进行一定的整理，需求如下： \
+                    1、图像标签的内容保持不变; \
+                    2、将翻译后文中出现的'我们'用'论文中'进行替换； \
+                    3、暂时将引文部分的链接去掉; \
+                    4、将公式以latex的格式进行整理; \
+                    5、整体结果以markdown格式输出。"},
+                {"role": "user", "content": f"好的，内容如下:{text}。请帮助翻译整理和修订，谢谢。"}
             ],
             stream=True,
             temperature=0.7
@@ -93,18 +178,18 @@ def translate_with_openaicall_stream(text: str, target_language: str = "中文")
         yield f"API调用错误: {str(e)}"
 
 st.set_page_config(layout="wide")
-col1, col2 = st.columns([0.5, 0.5])
+col1, col2 = st.columns([0.65, 0.35])
 
 model_dict = load_models()
 cli_options = parse_args()
 
-st.markdown("""
-# Marker Demo
+# st.markdown("""
+# # Marker Demo
 
-This app will let you try marker, a PDF or image -> Markdown, HTML, JSON converter. It works with any language, and extracts images, tables, equations, etc.
+# This app will let you try marker, a PDF or image -> Markdown, HTML, JSON converter. It works with any language, and extracts images, tables, equations, etc.
 
-Find the project [here](https://github.com/VikParuchuri/marker).
-""")
+# Find the project [here](https://github.com/VikParuchuri/marker).
+# """)
 
 in_file: UploadedFile = st.sidebar.file_uploader(
     "PDF, document, or image file:",
@@ -140,13 +225,38 @@ if in_file is None:
 
 filetype = in_file.type
 
+import fitz  # PyMuPDF
+def pdf_to_images(pdf_file, dpi=150):
+    """将上传的 PDF 文件转换为 PIL 图像列表"""
+    pdf_document = fitz.open(stream=pdf_file.read(), filetype="pdf")
+    images = []
+    mat = fitz.Matrix(dpi / 72, dpi / 72)  # 提高分辨率
+    for page_num in range(pdf_document.page_count):
+        page = pdf_document[page_num]
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
+    pdf_document.close()
+    return images
+
 with col1:
-    page_count = page_count(in_file)
-    page_number = st.number_input(
-        f"Page number out of {page_count}:", min_value=0, value=0, max_value=page_count
+    # 创建两行容器，比例为0.9:0.1
+    # 获取总页数
+    images = pdf_to_images(in_file)
+    total_pages = len(images)
+    
+    # 第一行：显示图片和第一个页面选择器
+    # 第一个页面选择器
+    page_number = st.sidebar.number_input(
+        f"Page number (top) out of {total_pages}:", 
+        min_value=0, 
+        max_value=total_pages-1,
+        key="page_number"
     )
-    pil_image = get_page_image(in_file, page_number)
-    st.image(pil_image, use_container_width=True)
+
+    # 显示对应页面的图片
+    pil_image = images[page_number]
+    st.image(pil_image, width='stretch')
 
 page_range = st.sidebar.text_input(
     "Page range to parse, comma separated like 0,5-10,20",
@@ -179,6 +289,8 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     page_range = config_parser.generate_config_dict()["page_range"]
     first_page = page_range[0] if page_range else 0
 
+#   if isinstance(rendered, MarkdownOutput):
+#        return rendered.markdown, "md", rendered.images
 text, ext, images = text_from_rendered(rendered)
 with col2:
     if output_format == "markdown":
@@ -196,9 +308,15 @@ with col2:
 
         with col2_top:
             st.subheader("📄 原始内容 (Original)")
-            st.markdown(text, unsafe_allow_html=True)
-            display_original = text        
-        
+            # st.markdown(text, unsafe_allow_html=True)
+             
+            edited_original = st_ace(
+                value=text, 
+                language="markdown", 
+                theme="github", 
+                height=300,
+                key="original_editor") 
+            display_original = text           
         # 翻译部分
         if do_translate:
             with col2_bottom:
@@ -284,11 +402,11 @@ if debug:
         if debug_data_path:
             pdf_image_path = os.path.join(debug_data_path, f"pdf_page_{first_page}.png")
             img = Image.open(pdf_image_path)
-            st.image(img, caption="PDF debug image", use_container_width=True)
+            st.image(img, caption="PDF debug image", width=True)
             layout_image_path = os.path.join(
                 debug_data_path, f"layout_page_{first_page}.png"
             )
             img = Image.open(layout_image_path)
-            st.image(img, caption="Layout debug image", use_container_width=True)
+            st.image(img, caption="Layout debug image", width=True)
         st.write("Raw output:")
         st.code(text, language=output_format)
