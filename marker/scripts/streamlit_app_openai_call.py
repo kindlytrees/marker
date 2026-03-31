@@ -43,7 +43,77 @@ def convert_pdf(fname: str, config_parser: ConfigParser) -> (str, Dict[str, Any]
     return converter(fname)
 
 
+<<<<<<< Updated upstream
 def markdown_insert_images(markdown, images):
+=======
+# def markdown_insert_images(markdown, images):
+#     image_tags = re.findall(
+#         r'(!\[(?P<image_title>[^\]]*)\]\((?P<image_path>[^\)"\s]+)\s*([^\)]*)\))',
+#         markdown,
+#     )
+
+#     for image in image_tags:
+#         image_markdown = image[0]
+#         image_alt = image[1]
+#         image_path = image[2]
+#         if image_path in images:
+#             markdown = markdown.replace(
+#                 image_markdown, img_to_html(images[image_path], image_alt)
+#             )
+#     return markdown
+
+# image upload to cloud and return url？？？
+
+def img2cloud_to_html(img, filename, img_alt):
+    # 1. Get OSS configuration from environment variables
+    access_key_id = os.environ.get("OSS_ACCESS_KEY_ID")
+    access_key_secret = os.environ.get("OSS_ACCESS_KEY_SECRET")
+    bucket_name = os.environ.get("OSS_BUCKET_NAME")
+    endpoint = os.environ.get("OSS_ENDPOINT")
+
+    # Check if configuration is complete
+    if not all([access_key_id, access_key_secret, bucket_name, endpoint]):
+        # Fallback or error message if config is missing
+        return f'<p style="color:red;">Error: OSS configuration missing. Please check environment variables.</p>'
+
+    # 2. Convert PIL image to byte stream
+    img_bytes = io.BytesIO()
+    # Use the format defined in settings, default to PNG if not set
+    img_format = settings.OUTPUT_IMAGE_FORMAT if hasattr(settings, 'OUTPUT_IMAGE_FORMAT') else 'PNG'
+    img.save(img_bytes, format=img_format)
+    img_bytes.seek(0) # Reset pointer to the beginning of the stream
+
+    # 3. Generate a unique filename to avoid overwriting
+    # Using UUID to ensure uniqueness, and organizing into a 'streamlit_images' folder
+    file_ext = img_format.lower()
+    unique_filename = f"screenshots/{filename}-{uuid.uuid4().hex}.{file_ext}"
+
+    # 4. Initialize OSS Bucket object
+    auth = oss2.Auth(access_key_id, access_key_secret)
+    bucket = oss2.Bucket(auth, endpoint, bucket_name)
+
+    try:
+        # 5. Upload the file to OSS
+        # put_object automatically handles the stream upload
+        bucket.put_object(unique_filename, img_bytes)
+
+        # 6. Construct the public access URL
+        # Remove protocol (http/https) from endpoint to avoid duplication
+        clean_endpoint = endpoint.replace("https://", "").replace("http://", "")
+        # Standard OSS URL format: https://{bucket-name}.{endpoint}/{filename}
+        image_url = f"https://{bucket_name}.{clean_endpoint}/{unique_filename}"
+
+        # 7. Return the HTML img tag
+        url = f'<img src="{image_url}" alt="{img_alt}" style="max-width: 100%;">'
+        print(url)
+        return url
+
+    except Exception as e:
+        # Return error info in HTML if upload fails
+        error = f'<p style="color:red;">Image Upload Failed: {str(e)}</p>'
+        return error
+def markdown_insert_images(markdown, filename, images):
+>>>>>>> Stashed changes
     image_tags = re.findall(
         r'(!\[(?P<image_title>[^\]]*)\]\((?P<image_path>[^\)"\s]+)\s*([^\)]*)\))',
         markdown,
@@ -55,7 +125,11 @@ def markdown_insert_images(markdown, images):
         image_path = image[2]
         if image_path in images:
             markdown = markdown.replace(
+<<<<<<< Updated upstream
                 image_markdown, img_to_html(images[image_path], image_alt)
+=======
+                image_markdown, img2cloud_to_html(images[image_path], filename, image_alt)
+>>>>>>> Stashed changes
             )
     return markdown
 
@@ -182,7 +256,8 @@ with tempfile.TemporaryDirectory() as tmp_dir:
 text, ext, images = text_from_rendered(rendered)
 with col2:
     if output_format == "markdown":
-        text = markdown_insert_images(text, images)
+        filename = os.path.basename(in_file)
+        text = markdown_insert_images(text, filename, images)
         #st.markdown(text, unsafe_allow_html=True)
         # 侧栏开关：是否启用可编辑编辑器
         # 翻译选项
